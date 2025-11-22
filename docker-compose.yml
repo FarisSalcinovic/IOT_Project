@@ -1,0 +1,64 @@
+version: "3.9"
+services:
+  mosquitto:
+    image: eclipse-mosquitto:1.6.12
+    ports:
+     - "1883:1883"
+    networks:
+      - internal_net
+  room1:
+    build: sensor_temperature
+    environment:
+      - MQTT_HOST=mosquitto
+      - SENSOR_TOPIC_DATA=room1/temperature
+      - SENSOR_TOPIC_STATUS=room1/heatpump
+    depends_on:
+      - mosquitto
+    networks:
+      - internal_net
+  room2:
+    build: sensor_temperature
+    environment:
+      - MQTT_HOST=mosquitto
+      - SENSOR_TOPIC_DATA=room2/temperature
+      - SENSOR_TOPIC_STATUS=room2/heatpump
+    depends_on:
+      - mosquitto
+    networks:
+      - internal_net
+  room3:
+    build: sensor_temperature
+    environment:
+      - MQTT_HOST=mosquitto
+      - SENSOR_TOPIC_DATA=room3/temperature
+      - SENSOR_TOPIC_STATUS=room3/heatpump
+    depends_on:
+      - mosquitto
+    networks:
+      - internal_net
+  living_room:
+    build: sensor_temperature
+    environment:
+      - MQTT_HOST=mosquitto
+      - SENSOR_TOPIC_DATA=living_room/temperature
+      - SENSOR_TOPIC_STATUS=living_room/heatpump
+    depends_on:
+      - mosquitto
+    networks:
+      - internal_net
+  office:
+    build: sensor_temperature
+    environment:
+      - MQTT_HOST=mosquitto
+      - SENSOR_TOPIC_DATA=office/temperature
+      - SENSOR_TOPIC_STATUS=office/heatpump
+    depends_on:
+      - mosquitto
+    networks:
+      - internal_net
+networks:
+  internal_net:
+    driver: bridge
+  global_net:
+    external: true
+
