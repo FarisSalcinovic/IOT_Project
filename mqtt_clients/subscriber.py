@@ -7,17 +7,15 @@ import sys
 import csv
 import paho.mqtt.client as mqtt
 
+# --- CONFIG: promijeni ako je potrebno ---
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-TOPICS = [
-    ("room1/temperature", 0),
-    ("room2/temperature", 0),
-    ("room3/temperature", 0),
-    ("living_room/temperature", 0),
-    ("office/temperature", 0),
-]
 
-CSV_FILE = "raw_temperatures.csv"
+ROOMS = ["room1", "room2", "room3", "living_room", "office"]
+TOPICS = [(f"{room}/temperature", 0) for room in ROOMS]
+
+# Base folder za CSV fajlove u kontejneru
+BASE_DATA_FOLDER = "/mqtt/data"
 
 running = True
 
@@ -29,11 +27,16 @@ def graceful_exit(signum, frame):
 signal.signal(signal.SIGINT, graceful_exit)
 signal.signal(signal.SIGTERM, graceful_exit)
 
-# Initialize CSV with header if not exists
-if not os.path.exists(CSV_FILE):
-    with open(CSV_FILE, mode='w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(["timestamp", "room", "value"])
+# Kreiraj folder i fajlove za svaku sobu ako ne postoje
+for room in ROOMS:
+    folder = os.path.join(BASE_DATA_FOLDER, room)
+    os.makedirs(folder, exist_ok=True)
+    for file_name in ["raw.csv", "clean.csv"]:
+        path = os.path.join(folder, file_name)
+        if not os.path.exists(path):
+            with open(path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["timestamp", "room", "value"])
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -54,10 +57,19 @@ def on_message(client, userdata, msg):
         room = msg.topic.split("/")[0]
         print(f"  Parsed -> timestamp: {ts}, room: {room}, value: {val}")
 
-        # Append to CSV
-        with open(CSV_FILE, mode='a', newline='') as f:
+        # --- P1: RAW ---
+        raw_file = os.path.join(BASE_DATA_FOLDER, room, "raw.csv")
+        with open(raw_file, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([ts, room, val])
+
+        # --- P2: CLEAN (izbaci vrijednosti 100) ---
+        if val != 100:
+            clean_file = os.path.join(BASE_DATA_FOLDER, room, "clean.csv")
+            with open(clean_file, "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([ts, room, val])
+
     except json.JSONDecodeError:
         print("  Payload is not valid JSON.")
 
