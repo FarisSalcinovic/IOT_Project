@@ -1,52 +1,161 @@
 version: "3.9"
 
 services:
+  # 1. Message Broker (MQTT) - ulazna tačka za senzore
   mosquitto:
     image: eclipse-mosquitto:1.6.12
+    container_name: mosquitto
     ports:
       - "1883:1883"
     networks:
       - internal_net
 
+  # 2. Database (InfluxDB) - baza za vremenske serije
   influxdb:
     image: influxdb:2.6
+    container_name: influxdb
     ports:
       - "8086:8086"
     environment:
-      - INFLUXDB_ADMIN_USER=admin
-      - INFLUXDB_ADMIN_PASSWORD=admin123
-      - INFLUXDB_DB=home_data
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=admin123
+      - DOCKER_INFLUXDB_INIT_ORG=my-org
+      - DOCKER_INFLUXDB_INIT_BUCKET=raw_data
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=new-dev-token # PROMIJENJENO: Korišten generički token
     volumes:
       - influxdb_data:/var/lib/influxdb2
     networks:
       - internal_net
 
+  # 3. Kafka Core
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - internal_net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - internal_net
+
+  # 4. Applications (Svi Python servisi sada koriste direktnu BUILD definiciju)
+
+  # 4.1. Sensor Simulator (Controller)
   controller:
-    build: ./sensor_temperature
+    # BUILD DEFINICIJA JE PREMJEŠTENA NA SVE SERVISE RADI ROBUSTNOSTI
+    build:
+      context: ./mqtt_clients
+      dockerfile: Dockerfile
+    container_name: controller
+    command: python controller.py
     environment:
       - MQTT_HOST=mosquitto
-      - SENSOR_TOPIC_DATA=room1/temperature
-      - SENSOR_TOPIC_STATUS=room1/heatpump
     depends_on:
       - mosquitto
     networks:
       - internal_net
 
-  subscriber:
-    build: ./mqtt_clients
+  # 4.2. Ingestor/Gateway (MQTT -> Kafka)
+  ingestor:
+    build:
+      context: ./mqtt_clients
+      dockerfile: Dockerfile
+    container_name: ingestor
+    command: python ingestor.py
     environment:
       - MQTT_HOST=mosquitto
-      - ROOMS=room1
-      - MQTT_HOST=mosquitto
-      - INFLUX_URL=http://influxdb:8086
-      - INFLUX_TOKEN=gOofN2uycwMDf8JlTjWvj70pr5pugmM7paUpTT9eY8wIVXW0OmU5_4ZN3afnuHtmOMJ2CNMswU725NXcIEMZAA==
-      - INFLUX_ORG=my-org
-      - INFLUX_BUCKET=raw_data
-
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     depends_on:
       - mosquitto
+      - kafka
+    networks:
+      - internal_net
+
+  # 4.3. P1: Save Raw Data (Kafka -> InfluxDB Raw)
+  pipeline_raw_saver:
+    build:
+      context: ./mqtt_clients
+      dockerfile: Dockerfile
+    container_name: pipeline_raw_saver
+    command: python pipeline_raw_saver.py
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - INFLUX_URL=http://influxdb:8086
+      - INFLUX_TOKEN=new-dev-token # PROMIJENJENO
+      - INFLUX_ORG=my-org
+      - INFLUX_BUCKET=raw_data
+    depends_on:
+      - kafka
       - influxdb
-      - controller
+    networks:
+      - internal_net
+
+  # 4.4. P2: Clean Data Pipeline (Kafka Raw -> InfluxDB Clean + Kafka Clean)
+  pipeline_cleaner:
+    build:
+      context: ./mqtt_clients
+      dockerfile: Dockerfile
+    container_name: pipeline_cleaner
+    command: python pipeline_cleaner.py
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - INFLUX_URL=http://influxdb:8086
+      - INFLUX_TOKEN=new-dev-token # PROMIJENJENO
+      - INFLUX_ORG=my-org
+      - INFLUX_BUCKET=clean_data
+    depends_on:
+      - kafka
+      - influxdb
+    networks:
+      - internal_net
+
+  # 4.5. P3: Actuator Pipeline (Kafka Clean -> MQTT Actuation)
+  pipeline_actuator:
+    build:
+      context: ./mqtt_clients
+      dockerfile: Dockerfile
+    container_name: pipeline_actuator
+    command: python pipeline_actuator.py
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - MQTT_HOST=mosquitto
+    depends_on:
+      - kafka
+      - mosquitto
+    networks:
+      - internal_net
+
+  # 4.6. P4: Aggregator (Kafka Clean -> InfluxDB Aggregate)
+  pipeline_aggregator:
+    build:
+      context: ./mqtt_clients
+      dockerfile: Dockerfile
+    container_name: pipeline_aggregator
+    command: python pipeline_aggregator.py
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - INFLUX_URL=http://influxdb:8086
+      - INFLUX_TOKEN=new-dev-token # PROMIJENJENO
+      - INFLUX_ORG=my-org
+      - INFLUX_BUCKET=aggregated_data
+    depends_on:
+      - kafka
+      - influxdb
     networks:
       - internal_net
 
